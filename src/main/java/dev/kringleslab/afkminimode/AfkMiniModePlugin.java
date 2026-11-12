@@ -56,6 +56,12 @@ import net.runelite.client.util.HotkeyListener;
 public class AfkMiniModePlugin extends Plugin
 {
 	private static final String RUNELITE_OPACITY_KEY = "uiWindowOpacity";
+	// pre-mini-mode window settings, kept in our config while mini mode is on. Still there at startup = the client
+	// was killed or crashed in mini mode (no ClientShutdown), so they get restored then.
+	private static final String RESTORE_BOUNDS = "restoreBounds";
+	private static final String RESTORE_STATE = "restoreState";
+	private static final String RESTORE_ON_TOP = "restoreOnTop";
+	private static final String RESTORE_OPACITY = "restoreOpacity";
 
 	private static final int[] MINIMAP = {InterfaceID.ToplevelOsrsStretch.MAP_MINIMAP, InterfaceID.ToplevelPreEoc.MAP_MINIMAP};
 	private static final int[] ORBS = {InterfaceID.ToplevelOsrsStretch.ORBS, InterfaceID.ToplevelPreEoc.ORBS};
@@ -170,6 +176,68 @@ public class AfkMiniModePlugin extends Plugin
 		logBasket.start();
 		eventBus.register(fishBarrel);
 		eventBus.register(logBasket);
+		recoverFromKill();
+	}
+
+	private void recoverFromKill()
+	{
+		Integer opacity = configManager.getConfiguration(AfkMiniModeConfig.GROUP, RESTORE_OPACITY, Integer.class);
+		if (opacity == null)
+		{
+			return;
+		}
+		log.debug("Last session ended in mini mode without leaving it; restoring window settings");
+		Integer state = configManager.getConfiguration(AfkMiniModeConfig.GROUP, RESTORE_STATE, Integer.class);
+		savedBounds = configManager.getConfiguration(AfkMiniModeConfig.GROUP, RESTORE_BOUNDS, Rectangle.class);
+		savedState = state == null ? Frame.NORMAL : state;
+		savedOnTop = Boolean.TRUE.equals(configManager.getConfiguration(AfkMiniModeConfig.GROUP, RESTORE_ON_TOP, Boolean.class));
+		savedOpacity = opacity;
+		SwingUtilities.invokeLater(() ->
+		{
+			writeRuneLiteConfig();
+			Frame frame = frame();
+			if (frame != null && savedBounds != null)
+			{
+				frame.setBounds(savedBounds);
+				frame.setExtendedState(savedState);
+			}
+			clearRestorePoint();
+		});
+	}
+
+	private void saveRestorePoint()
+	{
+		configManager.setConfiguration(AfkMiniModeConfig.GROUP, RESTORE_BOUNDS, savedBounds);
+		configManager.setConfiguration(AfkMiniModeConfig.GROUP, RESTORE_STATE, savedState);
+		configManager.setConfiguration(AfkMiniModeConfig.GROUP, RESTORE_ON_TOP, savedOnTop);
+		configManager.setConfiguration(AfkMiniModeConfig.GROUP, RESTORE_OPACITY, savedOpacity);
+	}
+
+	private void clearRestorePoint()
+	{
+		for (String key : new String[]{RESTORE_BOUNDS, RESTORE_STATE, RESTORE_ON_TOP, RESTORE_OPACITY})
+		{
+			configManager.unsetConfiguration(AfkMiniModeConfig.GROUP, key);
+		}
+	}
+
+	// RuneLite's own settings, as they were before mini mode; RuneLite reads the bounds/maximized ones on next launch
+	private void writeRuneLiteConfig()
+	{
+		if (savedBounds != null)
+		{
+			configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "clientBounds", savedBounds);
+		}
+		if ((savedState & Frame.MAXIMIZED_BOTH) != 0)
+		{
+			configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "clientMaximized", true);
+		}
+		else
+		{
+			configManager.unsetConfiguration(RuneLiteConfig.GROUP_NAME, "clientMaximized");
+		}
+		configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "gameAlwaysOnTop", savedOnTop);
+		configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, RUNELITE_OPACITY_KEY, savedOpacity);
 	}
 
 	@Override
@@ -240,7 +308,8 @@ public class AfkMiniModePlugin extends Plugin
 
 	private Frame frame()
 	{
-		return (Frame) SwingUtilities.getWindowAncestor(client.getCanvas());
+		// null before the client UI exists (plugin started during launch)
+		return client.getCanvas() == null ? null : (Frame) SwingUtilities.getWindowAncestor(client.getCanvas());
 	}
 
 	// RuneLite saves the window bounds *before* posting ClientShutdown, so a client closed in mini mode would reopen tiny.
@@ -252,18 +321,9 @@ public class AfkMiniModePlugin extends Plugin
 		{
 			return;
 		}
-		configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "clientBounds", savedBounds);
-		if ((savedState & Frame.MAXIMIZED_BOTH) != 0)
-		{
-			configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "clientMaximized", true);
-		}
-		else
-		{
-			configManager.unsetConfiguration(RuneLiteConfig.GROUP_NAME, "clientMaximized");
-		}
-		configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "gameAlwaysOnTop", savedOnTop);
-		configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, RUNELITE_OPACITY_KEY, savedOpacity);
+		writeRuneLiteConfig();
 		rememberDraggedPosition(frame());
+		clearRestorePoint();
 	}
 
 	private void rememberDraggedPosition(Frame frame)
@@ -311,6 +371,7 @@ public class AfkMiniModePlugin extends Plugin
 			savedState = frame.getExtendedState();
 			savedOnTop = runeLiteConfig.gameAlwaysOnTop();
 			savedOpacity = runeLiteConfig.windowOpacity();
+			saveRestorePoint();
 			if (config.alwaysOnTop())
 			{
 				configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "gameAlwaysOnTop", true);
@@ -340,18 +401,35 @@ public class AfkMiniModePlugin extends Plugin
 		}
 		else
 		{
-			restoreXpTracker();
-			restorePanels();
-			resumePlugins();
-			configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, RUNELITE_OPACITY_KEY, savedOpacity);
-			rememberDraggedPosition(frame);
-			configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "gameAlwaysOnTop", savedOnTop);
-			frame.setBounds(savedBounds);
-			frame.setExtendedState(savedState);
+			// each step on its own, so one failure can't leave plugins paused or the window tiny
+			safely("restore the XP counter", this::restoreXpTracker);
+			safely("restore info panels", this::restorePanels);
+			safely("resume plugins", this::resumePlugins);
+			safely("restore opacity", () -> configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, RUNELITE_OPACITY_KEY, savedOpacity));
+			safely("save the dragged position", () -> rememberDraggedPosition(frame));
+			safely("restore always on top", () -> configManager.setConfiguration(RuneLiteConfig.GROUP_NAME, "gameAlwaysOnTop", savedOnTop));
+			safely("restore the window", () ->
+			{
+				frame.setBounds(savedBounds);
+				frame.setExtendedState(savedState);
+			});
+			clearRestorePoint();
 		}
 
 		// BeforeRender stops firing once the plugin is off, so apply directly too
 		clientThread.invokeLater(this::applyHiding);
+	}
+
+	private static void safely(String what, Runnable step)
+	{
+		try
+		{
+			step.run();
+		}
+		catch (RuntimeException ex)
+		{
+			log.warn("Couldn't {} when leaving mini mode", what, ex);
+		}
 	}
 
 	// via RuneLite's own Window opacity setting: it re-applies that on every window config change (e.g. sidebar toggle),

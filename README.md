@@ -12,6 +12,8 @@ For AFK skilling you only glance at. One hotkey shrinks RuneLite to its smallest
 
 ## Features
 - **Window:** smallest legal size (765x503 game area), always on top, snaps to a corner. Drag it by the title bar while in mini mode and it reopens there next time. Changing the corner, monitor or padding resets that and moves it straight away.
+- **See-through:** optional window opacity while in mini mode, plus a hotkey to flip between that and fully solid.
+- **Always put back:** your window size, always-on-top and opacity are restored when you leave mini mode, turn the plugin off or close RuneLite. If RuneLite is killed or crashes in mini mode, they're restored the next time it starts.
 - **Hide:** minimap; orbs, world map, wiki, activity adviser and store buttons; chat and the promo banner above it (including dialogues and make-X/amount prompts, so leave mini mode to use those); XP drops.
 - **Other plugins' info panels:** hidden while in mini mode (e.g. Fishing catch stats, ping, infoboxes). The plugins keep running, so world highlights like fishing spots stay.
 - **Pause plugins:** comma-separated plugin names (default `Ground Items`) are fully paused while in mini mode and resumed when you leave.
