@@ -15,8 +15,11 @@ import net.runelite.api.Experience;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.Skill;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.SpriteID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.SkillIconManager;
 import net.runelite.client.game.SpriteManager;
@@ -34,7 +37,7 @@ import net.runelite.client.util.QuantityFormatter;
 
 /**
  * Status panel in the (hidden) chat area. Skill row mimics the game's XP counter: icon, total XP, thin progress bar.
- * Below it, inventory and barrel/basket rows. Pinned to the canvas bottom-left.
+ * Below it, inventory, Motherlode sack and barrel/basket/bag rows. Pinned to the canvas bottom-left.
  */
 class StatusBarOverlay extends Overlay
 {
@@ -45,6 +48,8 @@ class StatusBarOverlay extends Overlay
 	private static final int SKILL_BAR_HEIGHT = 5;
 	private static final Color BAR_BACKGROUND = new Color(0, 0, 0, 160);
 	private static final Color CHECK_TEXT = new Color(255, 255, 0);
+	private static final int SACK_SIZE = 108;
+	private static final int SACK_LARGE_SIZE = 189;
 
 	private final Client client;
 	private final AfkMiniModePlugin plugin;
@@ -92,6 +97,7 @@ class StatusBarOverlay extends Overlay
 		int h = config.barHeight();
 		int inner = w - 2 * PAD;
 
+		// count rows first to size the panel; must match the rows drawPanel draws
 		int containers = 0;
 		if (config.showContainers())
 		{
@@ -103,7 +109,7 @@ class StatusBarOverlay extends Overlay
 				}
 			}
 		}
-		int rows = (config.showInventory() ? 1 : 0) + containers;
+		int rows = (config.showInventory() ? 1 : 0) + containers + (showSack() ? 1 : 0);
 
 		int contentHeight = (showSkillRow() ? h + SKILL_BAR_HEIGHT + GAP : 0) + rows * (h + GAP);
 		if (contentHeight == 0)
@@ -132,6 +138,7 @@ class StatusBarOverlay extends Overlay
 		background.render(g);
 		g.setFont(FontManager.getRunescapeSmallFont());
 
+		// the whole panel is one overlay, so each row's tooltip is hit-tested by hand
 		Point mouse = localMouse();
 		int y = PAD;
 		if (showSkillRow())
@@ -152,6 +159,21 @@ class StatusBarOverlay extends Overlay
 			}
 			y += h + GAP;
 		}
+		if (showSack())
+		{
+			// like RuneLite's Motherlode plugin: carried pay-dirt counts, it has to fit in the sack too
+			int carried = inventoryCount(ItemID.PAYDIRT);
+			int held = client.getVarbitValue(VarbitID.MOTHERLODE_SACK_TRANSMIT);
+			int capacity = sackCapacity();
+			drawCapacityRow(g, PAD, y, inner, h, items.getImage(ItemID.PAYDIRT), Math.min(capacity, held + carried), capacity);
+			if (hovered(mouse, y, h))
+			{
+				tooltip(ColorUtil.wrapWithColorTag("Motherlode sack", JagexColors.MENU_TARGET)
+					+ "</br>Holding " + held + " / " + capacity + " pay-dirt (+" + carried + " carried)"
+					+ "</br>Golden nuggets carried: " + inventoryCount(ItemID.MOTHERLODE_NUGGET));
+			}
+			y += h + GAP;
+		}
 		if (config.showContainers())
 		{
 			for (StorageTracker t : plugin.getTrackers())
@@ -168,6 +190,23 @@ class StatusBarOverlay extends Overlay
 				}
 			}
 		}
+	}
+
+	// the game's sack HUD is only loaded inside the Motherlode Mine
+	private boolean showSack()
+	{
+		if (!config.showContainers())
+		{
+			return false;
+		}
+		// not isHidden(): mini mode hides this HUD itself, our row replaces it
+		return client.getWidget(InterfaceID.MotherlodeHud.PAY_DIRT) != null;
+	}
+
+	// same sizes as RuneLite's Motherlode plugin
+	private int sackCapacity()
+	{
+		return client.getVarbitValue(VarbitID.MOTHERLODE_BIGGERSACK) == 1 ? SACK_LARGE_SIZE : SACK_SIZE;
 	}
 
 	// mouse position relative to the panel, or null when it's off the canvas
@@ -242,8 +281,13 @@ class StatusBarOverlay extends Overlay
 		{
 			return sb.append("</br>Count unknown: use Check on it").toString();
 		}
-		return sb.append("</br>Holding ").append(t.getHeld()).append(" / ").append(StorageTracker.CAPACITY)
-			.append("</br>").append(StorageTracker.CAPACITY - t.getHeld()).append(" free").toString();
+		String detail = t.tooltipDetail();
+		if (detail != null)
+		{
+			return sb.append("</br>").append(detail).toString();
+		}
+		return sb.append("</br>Holding ").append(t.getHeld()).append(" / ").append(t.getCapacity())
+			.append("</br>").append(Math.max(0, t.getCapacity() - t.getHeld())).append(" free").toString();
 	}
 
 	// like the game's XP counter: icon left, total XP right, thin bar to the next level underneath
@@ -280,6 +324,12 @@ class StatusBarOverlay extends Overlay
 		drawCapacityRow(g, x, y, w, h, sprites.getSprite(SpriteID.SideIcons.INVENTORY, 0), usedSlots(), INVENTORY_SIZE);
 	}
 
+	private int inventoryCount(int itemId)
+	{
+		ItemContainer c = client.getItemContainer(InventoryID.INV);
+		return c == null ? 0 : c.count(itemId);
+	}
+
 	private int usedSlots()
 	{
 		ItemContainer c = client.getItemContainer(InventoryID.INV);
@@ -295,17 +345,19 @@ class StatusBarOverlay extends Overlay
 			drawRow(g, x, y, w, h, icon, 0, config.inventoryColor(), "Check " + t.getName(), CHECK_TEXT);
 			return;
 		}
-		drawCapacityRow(g, x, y, w, h, icon, t.getHeld(), StorageTracker.CAPACITY);
+		drawCapacityRow(g, x, y, w, h, icon, t.getHeld(), t.getCapacity());
 	}
 
 	private void drawCapacityRow(Graphics2D g, int x, int y, int w, int h, Image icon, int used, int capacity)
 	{
-		int free = capacity - used;
+		// used can pass capacity, e.g. a 36-coal bag after taking off the Smithing cape
+		int free = Math.max(0, capacity - used);
 		drawRow(g, x, y, w, h, icon, (double) used / capacity,
 			free == 0 ? config.fullColor() : config.inventoryColor(),
 			free == 0 ? "Full" : free + " free", Color.WHITE);
 	}
 
+	// square icon (h x h) on the left, bar filling the rest with the text centred on it
 	private void drawRow(Graphics2D g, int x, int y, int w, int h, Image icon, double ratio, Color fill, String text, Color textColor)
 	{
 		drawIcon(g, icon, x, y, h);
@@ -318,6 +370,7 @@ class StatusBarOverlay extends Overlay
 		}
 	}
 
+	// fit into a size x size square keeping aspect ratio; skip images still loading (null or 0-sized)
 	private void drawIcon(Graphics2D g, Image icon, int x, int y, int size)
 	{
 		if (icon == null || icon.getWidth(null) <= 0 || icon.getHeight(null) <= 0)
@@ -340,6 +393,7 @@ class StatusBarOverlay extends Overlay
 		g.fillRect(x, y, (int) (w * Math.max(0, Math.min(1, ratio))), h);
 	}
 
+	// vertically centred, with a 1px black shadow like the game's own text
 	private static void drawText(Graphics2D g, String text, int x, int y, int w, int h, Color color, boolean rightAlign)
 	{
 		FontMetrics fm = g.getFontMetrics();

@@ -20,7 +20,10 @@ For AFK skilling you only glance at. One hotkey shrinks RuneLite to its smallest
 - **Status panel**, pinned to the bottom-left where the chat was:
   - skill row, styled like the game's XP counter: skill icon, total XP, and a thin bar to the next level, for the skill you last gained XP in. If you keep XP drops visible, the game's own XP counter moves to the top-left instead and this row is skipped
   - inventory icon: free inventory slots
-  - barrel/basket icon: free space in an open fish barrel or log basket. It shows "Check barrel" until the count is exact, so use **Check** on it once.
+  - Motherlode Mine sack (only inside the mine): free space, counting the pay-dirt you carry, as the game reports it. The game's own sack counter is hidden in mini mode; hover the row for the sack count and golden nuggets carried
+  - container rows: free space in an open fish barrel, log basket, coal bag (27, or 36 with a Smithing/max cape) or gem bag/sack (60 per gem; the bar shows the fullest gem, hover for each). Each shows "Check ..." until the count is exact, so use **Check** on it once. The game doesn't send these counts, so they're tracked from chat messages and inventory changes:
+    - coal bag: mined coal (plus Celestial ring / Varrock platebody bonus ore), and coal used by Superheat Item, handled exactly as in TicTac7x's Charges plugin: inventory coal first, the rest from the bag, on the Smithing XP drop
+    - gem bag/sack: gems mined, stolen, picked up or telegrabbed into an open bag, and gems moved in or out by hand
 
 The client can't go below the game's minimum size. Hiding UI frees that space for the game view; it doesn't shrink the window further.
 
@@ -28,3 +31,10 @@ The client can't go below the game's minimum size. Hiding UI frees that space fo
 Fish barrel and log basket tracking are ported from these BSD-2 plugins, with their copyright notices kept in the source files:
 - [Fish Barrel](https://github.com/molo-pl/runelite-plugins) by molo-pl
 - [Log Basket](https://github.com/aidanmastro/log-basket-plugin) by aidanmastro
+
+Coal bag and gem bag tracking follow the game messages and handling worked out by these BSD-2 plugins, with their copyright notices kept in the source files:
+- [Coal Bag](https://github.com/WolffTech/coal-bag-plugin) by Nick Wolff
+- [Gem Sack](https://github.com/serenibyss/osrs-gem-sack-plugin) by serenibyss
+- [Charges](https://github.com/TicTac7x/runelite-plugins/tree/plugin-charges) by TicTac7x (including Superheat Item coal use)
+
+The Motherlode sack sizes match RuneLite's own Motherlode plugin.

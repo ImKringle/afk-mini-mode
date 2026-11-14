@@ -47,6 +47,10 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
 
+/**
+ * Log basket and forestry basket. An open basket catches chopped logs (counted per tick from chat); an infernal axe
+ * burns some of them, seen as firemaking XP.
+ */
 public class LogBasketTracker extends StorageTracker
 {
 	private static final int GAME_TICK_MARGIN = 2;
@@ -55,8 +59,6 @@ public class LogBasketTracker extends StorageTracker
 	private static final String EMPTY_BASKET_MESSAGE = "Your basket is empty.";
 	private static final String CHECKED_EMPTY_BASKET_MESSAGE = "The basket is empty.";
 	private static final String EMPTIED_TO_BANK_MESSAGE = "You empty your basket into the bank.";
-	private static final String EMPTIED_CONTAINERS_TO_BANK_MESSAGE = "You empty all of your containers into the bank.";
-	private static final String CONTAINERS_ALREADY_EMPTY_MESSAGE = "Your containers are already empty.";
 	private static final String EMPTIED_ALL_TO_INVENTORY_MESSAGE = "You empty your basket.";
 	private static final String EMPTIED_PARTIAL_TO_INVENTORY_MESSAGE = "You empty as many logs as you can carry.";
 	private static final String LOG_CUT_KANDARIN_HEADGEAR_MESSAGE = "Your Kandarin headgear provides you with an additional log.";
@@ -140,7 +142,7 @@ public class LogBasketTracker extends StorageTracker
 					setExact(0);
 					return;
 				case FULL_BASKET_MESSAGE:
-					setExact(CAPACITY);
+					setExact(getCapacity());
 					return;
 				case EMPTIED_PARTIAL_TO_INVENTORY_MESSAGE:
 					pendingPartialEmpty = isKnown();
@@ -162,6 +164,7 @@ public class LogBasketTracker extends StorageTracker
 	@Override
 	protected void inventoryChanged(Multiset<Integer> prev)
 	{
+		// partial empty: whatever logs the inventory gained came out of the basket
 		if (pendingPartialEmpty)
 		{
 			pendingPartialEmpty = false;
@@ -211,6 +214,7 @@ public class LogBasketTracker extends StorageTracker
 				return;
 		}
 
+		// also accept these options while a basket is worn (forestry basket used from the equipment tab)
 		boolean clickedBasket = w != null && BASKET_IDS.contains(w.getItemId());
 		boolean basketWorn = equipment.stream().anyMatch(BASKET_IDS::contains);
 		if (clickedBasket || basketWorn)
@@ -222,6 +226,7 @@ public class LogBasketTracker extends StorageTracker
 	@Subscribe
 	public void onStatChanged(StatChanged event)
 	{
+		// each firemaking XP drop while chopping with an infernal axe is one log burnt instead of kept
 		if (event.getSkill() == Skill.FIREMAKING && hasContainer() && has(CHARGED_INFERNAL_AXE_IDS))
 		{
 			burnedLogs++;

@@ -266,8 +266,8 @@ public interface AfkMiniModeConfig extends Config
 
 	@ConfigItem(
 		keyName = "showContainers",
-		name = "Fish barrel / log basket",
-		description = "A row for an open fish barrel or log basket. Use 'Check' on it once so the count is exact.",
+		name = "Skilling containers",
+		description = "A row for an open fish barrel, log basket, coal bag or gem bag (use 'Check' on it once so the count is exact), and for the Motherlode Mine sack.",
 		section = bar,
 		position = 3
 	)

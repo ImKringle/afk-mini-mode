@@ -1,5 +1,7 @@
 package dev.kringleslab.afkminimode;
 
+import com.google.common.collect.HashMultiset;
+import com.google.common.collect.Multiset;
 import com.google.inject.Provides;
 import java.awt.Dimension;
 import java.awt.Frame;
@@ -22,11 +24,15 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.Item;
+import net.runelite.api.ItemContainer;
 import net.runelite.api.Skill;
 import net.runelite.api.events.BeforeRender;
 import net.runelite.api.events.GameStateChanged;
+import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.StatChanged;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
@@ -51,7 +57,7 @@ import net.runelite.client.util.HotkeyListener;
 @PluginDescriptor(
 	name = "AFK Mini Mode",
 	description = "One hotkey shrinks RuneLite to a small always-on-top window with a skilling status bar",
-	tags = {"mini", "afk", "compact", "small", "window", "hide", "minimap", "chat", "barrel", "basket"}
+	tags = {"mini", "afk", "compact", "small", "window", "hide", "minimap", "chat", "barrel", "basket", "coal", "gem", "motherlode"}
 )
 public class AfkMiniModePlugin extends Plugin
 {
@@ -71,6 +77,8 @@ public class AfkMiniModePlugin extends Plugin
 	// RuneLite's movable overlay wrapping the game's XP counter
 	private static final String XP_TRACKER_OVERLAY = "EXPERIENCE_TRACKER_WIDGET";
 	private static final int[] XP_DROPS = {InterfaceID.ToplevelOsrsStretch.XP_DROPS, InterfaceID.ToplevelPreEoc.XP_DROPS};
+	// the game's pay-dirt sack counter; the status panel has its own row for it
+	private static final int[] MOTHERLODE_HUD = {InterfaceID.MotherlodeHud.UNIVERSE};
 
 	@Inject
 	private Client client;
@@ -106,6 +114,12 @@ public class AfkMiniModePlugin extends Plugin
 	private LogBasketTracker logBasket;
 
 	@Inject
+	private CoalBagTracker coalBag;
+
+	@Inject
+	private GemBagTracker gemBag;
+
+	@Inject
 	private AfkMiniModeConfig config;
 
 	// toggled on the EDT, read on the client thread
@@ -114,6 +128,10 @@ public class AfkMiniModePlugin extends Plugin
 
 	// client thread only: widgets this plugin hid, so only those are ever unhidden
 	private final Set<Integer> hiddenByUs = new HashSet<>();
+
+	// client thread only: item IDs carried, shared by the storage trackers
+	private final Multiset<Integer> inventory = HashMultiset.create();
+	private final Multiset<Integer> equipment = HashMultiset.create();
 
 	// client thread only: the skill that last gained XP, for the status bar
 	private final Map<Skill, Integer> lastXp = new EnumMap<>(Skill.class);
@@ -172,10 +190,12 @@ public class AfkMiniModePlugin extends Plugin
 		keyManager.registerKeyListener(hotkey);
 		keyManager.registerKeyListener(opacityHotkey);
 		overlayManager.add(statusBar);
-		fishBarrel.start();
-		logBasket.start();
-		eventBus.register(fishBarrel);
-		eventBus.register(logBasket);
+		for (StorageTracker t : getTrackers())
+		{
+			t.start(inventory, equipment);
+			eventBus.register(t);
+		}
+		clientThread.invokeLater(this::refreshSnapshots);
 		recoverFromKill();
 	}
 
@@ -246,14 +266,13 @@ public class AfkMiniModePlugin extends Plugin
 		keyManager.unregisterKeyListener(hotkey);
 		keyManager.unregisterKeyListener(opacityHotkey);
 		overlayManager.remove(statusBar);
-		eventBus.unregister(fishBarrel);
-		eventBus.unregister(logBasket);
+		getTrackers().forEach(eventBus::unregister);
 		SwingUtilities.invokeLater(() -> setActive(false));
 	}
 
 	List<StorageTracker> getTrackers()
 	{
-		return List.of(fishBarrel, logBasket);
+		return List.of(fishBarrel, logBasket, coalBag, gemBag);
 	}
 
 	@Subscribe
@@ -336,6 +355,7 @@ public class AfkMiniModePlugin extends Plugin
 		}
 	}
 
+	// the first StatChanged per skill (the login burst) only seeds lastXp; later increases are real XP drops
 	@Subscribe
 	public void onStatChanged(StatChanged e)
 	{
@@ -349,10 +369,63 @@ public class AfkMiniModePlugin extends Plugin
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged e)
 	{
-		if (e.getGameState() == GameState.LOGIN_SCREEN)
+		if (e.getGameState() == GameState.LOGGED_IN)
+		{
+			clientThread.invokeLater(this::refreshSnapshots);
+		}
+		else if (e.getGameState() == GameState.LOGIN_SCREEN)
 		{
 			lastXp.clear();
 			lastSkill = null;
+			inventory.clear();
+			equipment.clear();
+		}
+	}
+
+	@Subscribe
+	public void onItemContainerChanged(ItemContainerChanged e)
+	{
+		if (e.getContainerId() == InventoryID.INV)
+		{
+			// one shared snapshot for all trackers; each gets the before/after diff to work out what moved
+			Multiset<Integer> prev = HashMultiset.create(inventory);
+			snapshot(e.getItemContainer(), inventory);
+			for (StorageTracker t : getTrackers())
+			{
+				if (t.hasContainer())
+				{
+					t.inventoryChanged(prev);
+				}
+			}
+		}
+		else if (e.getContainerId() == InventoryID.WORN)
+		{
+			snapshot(e.getItemContainer(), equipment);
+		}
+	}
+
+	// one entry per slot, so a stack counts once (quantity ignored); fine for the unstackable fish/logs/coal/gems tracked
+	private static void snapshot(ItemContainer container, Multiset<Integer> target)
+	{
+		target.clear();
+		for (Item i : container.getItems())
+		{
+			target.add(i.getId());
+		}
+	}
+
+	// ItemContainerChanged only fires on change, so read the containers directly when starting while logged in or on login
+	private void refreshSnapshots()
+	{
+		ItemContainer inv = client.getItemContainer(InventoryID.INV);
+		ItemContainer worn = client.getItemContainer(InventoryID.WORN);
+		if (inv != null)
+		{
+			snapshot(inv, inventory);
+		}
+		if (worn != null)
+		{
+			snapshot(worn, equipment);
 		}
 	}
 
@@ -465,6 +538,7 @@ public class AfkMiniModePlugin extends Plugin
 		return new Point(x, y);
 	}
 
+	// a remembered position can be on a monitor that's since been unplugged
 	private static boolean isOnScreen(Point p)
 	{
 		for (GraphicsDevice d : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices())
@@ -611,6 +685,7 @@ public class AfkMiniModePlugin extends Plugin
 		pausedByUs.clear();
 	}
 
+	// every frame: the game rebuilds these widgets (layout change, interface reload) and they come back visible
 	@Subscribe
 	public void onBeforeRender(BeforeRender e)
 	{
@@ -624,6 +699,7 @@ public class AfkMiniModePlugin extends Plugin
 		setHidden(ORBS, on && config.hideOrbs());
 		setHidden(CHAT, on && config.hideChat());
 		setHidden(XP_DROPS, on && config.hideXpDrops());
+		setHidden(MOTHERLODE_HUD, on && config.showBar() && config.showContainers());
 	}
 
 	private void setHidden(int[] ids, boolean hide)
@@ -637,6 +713,7 @@ public class AfkMiniModePlugin extends Plugin
 			}
 			if (hide)
 			{
+				// already hidden by the game or another plugin: leave it out of hiddenByUs so we never unhide it
 				if (!w.isSelfHidden())
 				{
 					w.setHidden(true);

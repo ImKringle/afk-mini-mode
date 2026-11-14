@@ -1,6 +1,5 @@
 package dev.kringleslab.afkminimode;
 
-import com.google.common.collect.HashMultiset;
 import com.google.common.collect.Multiset;
 import java.util.Collection;
 import java.util.EnumMap;
@@ -9,13 +8,9 @@ import java.util.function.ToIntFunction;
 import lombok.Getter;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
-import net.runelite.api.Item;
-import net.runelite.api.ItemContainer;
 import net.runelite.api.events.GameStateChanged;
-import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.InterfaceID;
-import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
@@ -28,11 +23,14 @@ import net.runelite.client.eventbus.Subscribe;
  */
 public abstract class StorageTracker
 {
-	public static final int CAPACITY = 28;
+	private static final int DEFAULT_CAPACITY = 28;
+	// bank "Empty containers" button, shared by every container
+	protected static final String EMPTIED_CONTAINERS_TO_BANK_MESSAGE = "You empty all of your containers into the bank.";
+	protected static final String CONTAINERS_ALREADY_EMPTY_MESSAGE = "Your containers are already empty.";
 
 	protected enum Action
 	{
-		FILL, EMPTY, CHECK
+		FILL, EMPTY, CHECK, SUPERHEAT
 	}
 
 	@Getter
@@ -50,8 +48,9 @@ public abstract class StorageTracker
 
 	protected final Client client;
 	protected final ClientThread clientThread;
-	protected final Multiset<Integer> inventory = HashMultiset.create();
-	protected final Multiset<Integer> equipment = HashMultiset.create();
+	// item ID snapshots shared by all trackers, kept current by the plugin
+	protected Multiset<Integer> inventory;
+	protected Multiset<Integer> equipment;
 	private final Map<Action, Integer> actionTicks = new EnumMap<>(Action.class);
 
 	protected StorageTracker(Client client, ClientThread clientThread, String name, int tickMargin,
@@ -66,49 +65,33 @@ public abstract class StorageTracker
 		this.checkParser = checkParser;
 	}
 
-	/** Called with the previous inventory after it changed, only while a container is carried. */
-	protected abstract void inventoryChanged(Multiset<Integer> prev);
-
-	void start()
+	/** Called by the plugin with the previous inventory after it changed, only while a container is carried. */
+	protected void inventoryChanged(Multiset<Integer> prev)
 	{
+	}
+
+	/** Called by the plugin on startUp with its shared inventory/equipment snapshots. */
+	void start(Multiset<Integer> inventory, Multiset<Integer> equipment)
+	{
+		this.inventory = inventory;
+		this.equipment = equipment;
 		reset();
-		clientThread.invokeLater(this::refreshSnapshots);
 	}
 
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged event)
 	{
-		if (event.getGameState() == GameState.LOGGED_IN)
+		if (event.getGameState() == GameState.LOGIN_SCREEN)
 		{
-			clientThread.invokeLater(this::refreshSnapshots);
-		}
-		else if (event.getGameState() == GameState.LOGIN_SCREEN)
-		{
+			// contents can change while logged out (other account, mobile), so the count is no longer exact
 			reset();
-		}
-	}
-
-	@Subscribe
-	public void onItemContainerChanged(ItemContainerChanged event)
-	{
-		if (event.getContainerId() == InventoryID.INV)
-		{
-			Multiset<Integer> prev = HashMultiset.create(inventory);
-			snapshot(event.getItemContainer(), inventory);
-			if (hasContainer())
-			{
-				inventoryChanged(prev);
-			}
-		}
-		else if (event.getContainerId() == InventoryID.WORN)
-		{
-			snapshot(event.getItemContainer(), equipment);
 		}
 	}
 
 	@Subscribe
 	public void onWidgetLoaded(WidgetLoaded event)
 	{
+		// a Check opens the item dialogue box; its text is only filled in after WidgetLoaded, hence invokeLater
 		if (event.getGroupId() == InterfaceID.OBJECTBOX && consumeAction(Action.CHECK))
 		{
 			clientThread.invokeLater(() ->
@@ -142,6 +125,18 @@ public abstract class StorageTracker
 		return -1;
 	}
 
+	/** Max count; can depend on gear (coal bag + Smithing cape), so it's read live rather than stored. */
+	public int getCapacity()
+	{
+		return DEFAULT_CAPACITY;
+	}
+
+	/** Tooltip body replacing the default "Holding x / y" lines (joined with </br>), or null for the default. */
+	public String tooltipDetail()
+	{
+		return null;
+	}
+
 	protected boolean hasContainer()
 	{
 		return has(allIds);
@@ -149,7 +144,7 @@ public abstract class StorageTracker
 
 	protected void setExact(int count)
 	{
-		held = Math.max(0, Math.min(CAPACITY, count));
+		held = Math.max(0, Math.min(getCapacity(), count));
 		known = true;
 	}
 
@@ -157,7 +152,7 @@ public abstract class StorageTracker
 	{
 		if (known)
 		{
-			held = Math.max(0, Math.min(CAPACITY, held + count));
+			held = Math.max(0, Math.min(getCapacity(), held + count));
 		}
 	}
 
@@ -179,29 +174,7 @@ public abstract class StorageTracker
 		return false;
 	}
 
-	private static void snapshot(ItemContainer container, Multiset<Integer> target)
-	{
-		target.clear();
-		for (Item i : container.getItems())
-		{
-			target.add(i.getId());
-		}
-	}
-
-	private void refreshSnapshots()
-	{
-		ItemContainer inv = client.getItemContainer(InventoryID.INV);
-		ItemContainer worn = client.getItemContainer(InventoryID.WORN);
-		if (inv != null)
-		{
-			snapshot(inv, inventory);
-		}
-		if (worn != null)
-		{
-			snapshot(worn, equipment);
-		}
-	}
-
+	// a click and its result (chat, inventory change) land a tick or two apart; actions bridge that gap
 	protected void markAction(Action action)
 	{
 		actionTicks.put(action, client.getTickCount());
@@ -222,8 +195,6 @@ public abstract class StorageTracker
 	protected void reset()
 	{
 		forget();
-		inventory.clear();
-		equipment.clear();
 		actionTicks.clear();
 	}
 }

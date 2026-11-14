@@ -49,6 +49,10 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
 
+/**
+ * Fish barrel and fish sack barrel. An open barrel catches fish, counted per tick from catch messages; a fish landing
+ * in the inventory instead means the barrel is full.
+ */
 public class FishBarrelTracker extends StorageTracker
 {
 	private static final int GAME_TICK_MARGIN = 3;
@@ -62,8 +66,6 @@ public class FishBarrelTracker extends StorageTracker
 
 	private static final String BANK_FULL_MESSAGE = "Your bank could not hold your fish.";
 	private static final String BARREL_FULL_MESSAGE = "The barrel is full. It may be emptied at a bank.";
-	private static final String BANK_EMPTY_MESSAGE = "You empty all of your containers into the bank.";
-	private static final String CONTAINERS_EMPTY_MESSAGE = "Your containers are already empty.";
 
 	private static final String CHECK_EMPTY_MESSAGE = "The barrel is empty.";
 	private static final String CHECK_ENTRY_REGEX = "([0-9]+) x [a-zA-Z ]+,? ?";
@@ -152,10 +154,10 @@ public class FishBarrelTracker extends StorageTracker
 					forget();
 					break;
 				case BARREL_FULL_MESSAGE:
-					setExact(CAPACITY);
+					setExact(getCapacity());
 					break;
-				case BANK_EMPTY_MESSAGE:
-				case CONTAINERS_EMPTY_MESSAGE:
+				case EMPTIED_CONTAINERS_TO_BANK_MESSAGE:
+				case CONTAINERS_ALREADY_EMPTY_MESSAGE:
 					setExact(0);
 					break;
 			}
@@ -198,7 +200,7 @@ public class FishBarrelTracker extends StorageTracker
 			if (inventory.stream().anyMatch(ALL_FISH_TYPES::contains))
 			{
 				// fish left over after 'Fill': barrel is full
-				setExact(CAPACITY);
+				setExact(getCapacity());
 			}
 			else
 			{
@@ -216,6 +218,7 @@ public class FishBarrelTracker extends StorageTracker
 		}
 	}
 
+	// a catch's chat message and inventory change can arrive in either order, so settle them together once per tick
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
@@ -228,7 +231,7 @@ public class FishBarrelTracker extends StorageTracker
 			}
 			else
 			{
-				setExact(CAPACITY);
+				setExact(getCapacity());
 			}
 		}
 		else if (consumeAction(Action.EMPTY))
